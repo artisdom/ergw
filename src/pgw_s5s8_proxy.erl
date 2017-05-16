@@ -21,6 +21,8 @@
 -include("include/ergw.hrl").
 -include("gtp_proxy_ds.hrl").
 
+-import(ergw_aaa_session, [to_session/1]).
+
 -define(GTP_v1_Interface, ggsn_gn_proxy).
 -define(T3, 10 * 1000).
 -define(N3, 5).
@@ -130,12 +132,21 @@ init(#{proxy_sockets := ProxyPorts, proxy_data_paths := ProxyDPs,
        pgw := PGW, proxy_data_source := ProxyDS,
        contexts := Contexts}, State) ->
 
+    SessionOpts = [{'Accouting-Update-Fun', fun accounting_update/2}],
+    {ok, Session} = ergw_aaa_session_sup:new_session(self(), to_session(SessionOpts)),
+
     {ok, State#{proxy_ports => ProxyPorts, proxy_dps => ProxyDPs,
-		contexts => Contexts, default_gw => PGW, proxy_ds => ProxyDS}}.
+		'Session' => Session, contexts => Contexts,
+		default_gw => PGW, proxy_ds => ProxyDS}}.
 
 handle_call(delete_context, _From, State) ->
     lager:warning("delete_context no handled(yet)"),
     {reply, ok, State};
+
+handle_call(get_accounting, _From,
+	    #{context := Context} = State) ->
+    Counter = gtp_dp:get_accounting(Context),
+    {reply, Counter, State};
 
 handle_call({path_restart, Path}, _From,
 	    #{context := #context{path = Path} = Context,
@@ -220,9 +231,10 @@ handle_request(ReqKey, #gtp{version = v1} = Msg, Resent, State) ->
     ?GTP_v1_Interface:handle_request(ReqKey, Msg, Resent, State);
 
 handle_request(ReqKey,
-	       #gtp{type = create_session_request} = Request,
+	       #gtp{type = create_session_request, ie = IEs} = Request,
 	       _Resent,
-	       #{context := Context0} = State) ->
+	       #{context := Context0, aaa_opts := AAAopts,
+		 'Session' := Session} = State) ->
 
     Context1 = update_context_from_gtp_req(Request, Context0#context{state = #context_state{}}),
     ContextPreProxy = gtp_path:bind(Request, Context1),
@@ -235,6 +247,10 @@ handle_request(ReqKey,
     gtp_context:enforce_restrictions(Request, Context),
 
     {ProxyGtpPort, ProxyGtpDP} = get_proxy_sockets(ProxyInfo, State),
+
+    SessionOpts0 = pgw_s5s8:init_session(IEs, Context, AAAopts),
+    SessionOpts = pgw_s5s8:init_session_from_gtp_req(IEs, AAAopts, SessionOpts0),
+    ergw_aaa_session:start(Session, SessionOpts),
 
     ProxyContext0 = init_proxy_context(ProxyGtpPort, ProxyGtpDP, Context, ProxyInfo),
     ProxyContext = gtp_path:bind(ProxyContext0),
@@ -491,6 +507,20 @@ handle_proxy_info(#gtp{ie = #{?'Recovery' := Recovery}},
 				    Context#context.remote_control_tei,
 				    ResponseIEs},
 			   context = Context})
+    end.
+
+accounting_update(GTP, SessionOpts) ->
+    case gen_server:call(GTP, get_accounting) of
+	{ok, #counter{rx = {RcvdBytes, RcvdPkts},
+		      tx = {SendBytes, SendPkts}}} ->
+	    Acc = [{'InPackets',  RcvdPkts},
+		   {'OutPackets', SendPkts},
+		   {'InOctets',   RcvdBytes},
+		   {'OutOctets',  SendBytes}],
+	    ergw_aaa_session:merge(SessionOpts, to_session(Acc));
+	_Other ->
+	    lager:warning("got unexpected accounting: ~p", [_Other]),
+	    SessionOpts
     end.
 
 apply_context_change(NewContext0, OldContext)

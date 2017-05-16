@@ -15,7 +15,8 @@
 	 start_link/1, send/4, get_id/1,
 	 create_pdp_context/2,
 	 update_pdp_context/2,
-	 delete_pdp_context/2]).
+	 delete_pdp_context/2,
+	 get_accounting/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -78,6 +79,10 @@ validate_option(type, Value) when Value =:= 'gtp-u' ->
     Value;
 validate_option(Opt, Value) ->
     throw({error, {options, {Opt, Value}}}).
+
+get_accounting(#context{data_port = GtpPort, remote_data_ip = PeerIP,
+			local_data_tei = LocalTEI, remote_data_tei = RemoteTEI}) ->
+    dp_call(GtpPort, {get_accounting, PeerIP, LocalTEI, RemoteTEI}).
 
 %%%===================================================================
 %%% call/cast wrapper for gtp_port

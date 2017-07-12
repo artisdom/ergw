@@ -85,7 +85,8 @@ validate_option(Opt, Value) ->
     gtp_context:validate_option(Opt, Value).
 
 init(_Opts, State) ->
-    SessionOpts = [{'Accouting-Update-Fun', fun accounting_update/2}],
+    SessionOpts = [{'Accouting-Update-Fun', fun accounting_update/2},
+		   {'Interim-Accounting', undefined}],
     {ok, Session} = ergw_aaa_session_sup:new_session(self(), to_session(SessionOpts)),
     {ok, State#{'Session' => Session}}.
 
@@ -96,6 +97,10 @@ handle_call(delete_context, From, #{context := Context} = State) ->
 handle_call(get_accounting, _From, #{context := Context} = State) ->
     Counter = gtp_dp:get_accounting(Context),
     {reply, Counter, State};
+
+handle_call({activate_pcc_rules, UL, DL}, _From, #{context := Context} = State) ->
+    gtp_dp:activate_pcc_rules(Context, UL, DL),
+    {reply, ok, State};
 
 handle_call({path_restart, Path}, _From,
 	    #{context := #context{path = Path} = Context} = State) ->
@@ -178,6 +183,7 @@ handle_request(_ReqKey,
 
     gtp_context:register_remote_context(ContextPending),
     Context = dp_create_pdp_context(ContextPending),
+    gtp_context:apply_session_policy(online, ActiveSessionOpts, Context, State),
 
     ResponseIEs = create_session_response(ActiveSessionOpts, IEs, EBI, Context),
     Response = response(create_session_response, Context, ResponseIEs, Request),
